@@ -128,7 +128,14 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 	inputSignal := signal.FromRaw(item.info.Signal, signalPrio(item.p.Target, call, &item.info))
 	newSignal := proc.fuzzer.corpusSignalDiff(inputSignal)
 	if newSignal.Empty() {
-		return
+		// hjx-modify: maybe add code here
+		ok, closepcdist := proc.fuzzer.checkIsCloserToRacePair(&item.info, item.p, proc.fuzzer.thresholdPCDist)
+		proc.fuzzer.updatethresholdPCDistStatus()
+		Logf(1, "[HJX-MODIFY]: closepcdist is %v", closepcdist)
+		if !ok {
+			return
+		}
+		// return
 	}
 	Logf(3, "[FUZZER] triaging input for %v (new signal=%v)", call.Meta.CallName, newSignal.Len())
 	var inputCover cover.Cover
@@ -154,8 +161,16 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 		newSignal = newSignal.Intersection(thisSignal)
 		// Without !minimized check manager starts losing some considerable amount
 		// of coverage after each restart. Mechanics of this are not completely clear.
+		
+		// hjx-modify: maybe add code here 
 		if newSignal.Empty() && item.flags&ProgMinimized == 0 {
-			return
+			// return
+			ok, closepcdist := proc.fuzzer.checkIsCloserToRacePair(&inf, item.p, proc.fuzzer.thresholdPCDist)
+			proc.fuzzer.updatethresholdPCDistStatus()
+			Logf(1, "[HJX-MODIFY]: closepcdist is %v", closepcdist)
+			if !ok {
+				return
+			}
 		}
 		inputCover.Merge(inf.Cover)
 	}
@@ -366,6 +381,7 @@ func (proc *Proc) updateRaceProgCand(info []ipc.CallInfo, p *prog.Prog) {
 
 	foreachRawCover(rawCovers, func(i, j int) {
 		if ri, ok := proc.mayRace(i, j, rawCovers); ok {
+			Logf(1, "hjx-debug pushNewRaceProgCand()")
 			// This program executes race candidates(s)
 			a := &NewRaceProgCandArgs{
 				Name: *flagName,
@@ -375,13 +391,89 @@ func (proc *Proc) updateRaceProgCand(info []ipc.CallInfo, p *prog.Prog) {
 				},
 			}
 			proc.fuzzer.pushNewRaceProgCand(a)
+			// hjx-modify
+			p.HasNewRaceProgCand = true
 		}
 	})
 }
 
+
+// hjx-modify
+func uint32abs(a, b uint32) int64 {
+	if a > b {
+		return int64(a - b)
+	} else {
+		return int64(b - a)
+	}
+}
+
+// hjx-modify
+// not use! and not update!
+// always call fuzzer.checkIsCloserToRacePair() instead of calling this
+func (proc *Proc) checkIsCloserToRacePair(info []ipc.CallInfo, p *prog.Prog, thresholdPCDist int64) (bool, int64) {
+	// checkIsCloserToRacePair() may consume a lot of resources(time and memory)
+	// so call it as few as possible
+	// note: 1 inst maybe store in pc[0:2] or more, base on arch
+
+	if p.HasNewRaceProgCand {
+		return true, 0
+	}
+
+	// for performance 
+	if proc.fuzzer.workQueue.lenQueue() >= 100 {
+		return false, -1
+	}
+
+	rawCovers := make([]cover.RawCover, len(info))
+	for i := 0; i < len(info); i++ {
+		rawCovers[i] = info[i].Cover
+	}
+
+	closestPCDist := int64(^uint64(0) >> 1)
+	var nowPCDist int64
+	for _, covs := range rawCovers {
+		for _, covpc1st := range covs {
+			for racepoint1 := range proc.fuzzer.sparseRaceCandPairs {
+				nowPCDist = uint32abs(covpc1st, racepoint1)
+				Logf(1, "[HJX-MODIFY proc()] nowPCDist is %v", nowPCDist)
+				if nowPCDist < closestPCDist {
+					closestPCDist = nowPCDist
+				}
+				if nowPCDist <= thresholdPCDist {
+					Logf(1, "[HJX-MODIFY proc()] closer 1 race pc: cov:%v, race:%v", covpc1st, racepoint1)
+					if closestPCDist < proc.fuzzer.thresholdPCDist && proc.fuzzer.thresholdPCDist > 0x1000 {
+						proc.fuzzer.thresholdPCDist = closestPCDist
+					}
+					return true, closestPCDist
+					// todo: does need check another (1 racepair has 2 pc)?
+					// entries := proc.fuzzer.sparseRaceCandPairs[racepoint1]
+					// // todo: need restart search covs? or search from covpc
+					// for _, covpc2nd := range covs {
+					// 	for _, racepoint2 := range entries {
+					// 		nowPCDist = uint32abs(covpc2nd, racepoint2.Cover)
+					// 		if nowPCDist < closestPCDist {
+					// 			closestPCDist = nowPCDist
+					// 		}
+					// 		if  nowPCDist <= thresholdPCDist {
+					// 			Logf(1, "[HJX-MODIFY] closer 2 race pc: cov:%v, race:%v", covpc2nd, racepoint1)
+					// 			return true, closestPCDist
+					// 		}
+					// 	}
+					// }
+				}
+			}
+		}
+	}
+	return false, closestPCDist
+}
+
+
 func (proc *Proc) execute(execOpts *ipc.ExecOpts, p *prog.Prog, flags ProgTypes, stat Stat) []ipc.CallInfo {
 	info := proc.executeRaw(execOpts, p, stat)
 
+	// hjx-modify
+	Logf(1, "[HJX-DEBUG] execute()")
+	p.HasNewRaceProgCand = false
 	// Update RaceProgCand
 	proc.updateRaceProgCand(info, p)
 

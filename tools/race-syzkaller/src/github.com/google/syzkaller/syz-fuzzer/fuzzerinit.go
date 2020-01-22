@@ -164,6 +164,10 @@ func fuzzerInit() *Fuzzer {
 		corpusHashes:             make(map[hash.Sig]struct{}),
 
 		sparseRaceCandPairs: sparseRaceCandPairs,
+		// hjx-modify
+		thresholdPCDist: 		int64(^uint64(0) >> 1),
+		thresholdPCDistReset:   0,
+
 		suppressedPairs:     make(map[MempairHash]struct{}),
 	}
 	fuzzer.gate = ipc.NewGate(2**flagProcs, fuzzer.leakCheckCallback)

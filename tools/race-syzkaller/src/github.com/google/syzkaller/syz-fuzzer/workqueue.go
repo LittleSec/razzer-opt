@@ -129,3 +129,11 @@ func (wq *WorkQueue) wantCandidates() bool {
 	defer wq.mu.RUnlock()
 	return len(wq.candidate) < wq.procs
 }
+
+
+// hjx-modify
+func (wq *WorkQueue) lenQueue() int {
+	wq.mu.RLock()
+	defer wq.mu.RUnlock()
+	return len(wq.triageCandidate)+len(wq.candidate)
+}

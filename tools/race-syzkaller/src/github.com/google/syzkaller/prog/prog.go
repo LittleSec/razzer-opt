@@ -10,6 +10,8 @@ import (
 type Prog struct {
 	Target *Target
 	Calls  []*Call
+	// hjx-modify
+	HasNewRaceProgCand bool
 }
 
 type Call struct {

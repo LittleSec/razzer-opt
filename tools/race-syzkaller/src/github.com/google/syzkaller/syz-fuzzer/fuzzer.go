@@ -74,6 +74,11 @@ type Fuzzer struct {
 
 	// static analysis result
 	sparseRaceCandPairs map[uint32][]EntryTy
+	// hjx-modify
+	thresholdPCDist int64       // Temporary: when < 0x1000, then don't change(to smaller)
+	thresholdPCDistReset uint16 // Temporary: when thresholdPCDist<0x1000 don't change after 0x2000 exec, reset thresholdPCDist
+								// and when thresholdPCDist<0x1000 don't change after 0xe000 exec, reset thresholdPCDist
+								// because racecandpairs are sparse, we should avoid prog gen/mut by syzkaller are too dense
 
 	// raceprog cand from fuzzer to sched
 	qMu                  sync.RWMutex
@@ -452,13 +457,86 @@ func (fuzzer *Fuzzer) corpusSignalDiff(sign signal.Signal) signal.Signal {
 	return fuzzer.corpusSignal.Diff(sign)
 }
 
+func (fuzzer *Fuzzer) updatethresholdPCDistStatus() {
+	if fuzzer.thresholdPCDist <= 0x1000 && fuzzer.thresholdPCDistReset >= 0x2000 {
+		fuzzer.thresholdPCDist = int64(^uint64(0) >> 1)
+		fuzzer.thresholdPCDistReset = 0
+	} else if fuzzer.thresholdPCDist > 0x1000 && fuzzer.thresholdPCDistReset >= 0xe000 {
+		fuzzer.thresholdPCDist <<= 1 // *2
+		fuzzer.thresholdPCDistReset = 0
+	}
+	fuzzer.thresholdPCDistReset++ // will overflow, doesn't matter
+}
+
+// hjx-modify
+func (fuzzer *Fuzzer) checkIsCloserToRacePair(info *ipc.CallInfo, p *prog.Prog, thresholdPCDist int64) (bool, int64) {
+	// checkIsCloserToRacePair() may consume a lot of resources(time and memory)
+	// so call it as few as possible  
+	// note: 1 inst maybe store in pc[0:2] or more, base on arch
+
+	if p.HasNewRaceProgCand {
+		return true, 0
+	}
+
+	// for performance 
+	if fuzzer.workQueue.lenQueue() >= 100 {
+		return false, -1
+	}
+
+	closestPCDist := int64(^uint64(0) >> 1)
+	var nowPCDist int64
+	Logf(1, "[HJX-DEBUG] len Cover is %v", len(info.Cover))
+	for _, covpc1st := range info.Cover {
+		for racepoint1 := range fuzzer.sparseRaceCandPairs {
+			nowPCDist = uint32abs(covpc1st, racepoint1)
+			if nowPCDist < closestPCDist {
+				closestPCDist = nowPCDist
+			}
+			Logf(1, "[HJX-MODIFY fuzzer()] nowPCDist is %v", nowPCDist)
+			if nowPCDist <= thresholdPCDist {
+				Logf(1, "[HJX-MODIFY fuzzer()] closer 1 race pc: cov:%v, race:%v", covpc1st, racepoint1)
+				if closestPCDist < fuzzer.thresholdPCDist && fuzzer.thresholdPCDist > 0x1000 {
+					fuzzer.thresholdPCDist = closestPCDist
+					fuzzer.thresholdPCDistReset = 0
+				}
+				return true, closestPCDist
+				// todo: does need check another (1 racepair has 2 pc)?
+				// entries := fuzzer.sparseRaceCandPairs[racepoint1]
+				// // todo: need restart search covs? or search from covpc
+				// for _, covpc2nd := range info.Cover {
+				// 	for _, racepoint2 := range entries {
+				// 		nowPCDist = uint32abs(covpc2nd, racepoint2.Cover)
+				// 		if nowPCDist < closestPCDist {
+				// 			closestPCDist = nowPCDist
+				// 		}
+				// 		if  nowPCDist <= thresholdPCDist {
+				// 			Logf(1, "[HJX-MODIFY] closer 2 race pc: cov:%v, race:%v", covpc2nd, racepoint1)
+				// 			return true, closestPCDist
+				// 		}
+				// 	}
+				// }
+			}
+		}
+	}
+	return false, closestPCDist
+}
+
 func (fuzzer *Fuzzer) checkNewSignal(p *prog.Prog, info []ipc.CallInfo) (calls []int) {
+	
+	// hjx-modify: or maybe add code here
+
 	fuzzer.signalMu.RLock()
 	defer fuzzer.signalMu.RUnlock()
 	for i, inf := range info {
 		diff := fuzzer.maxSignal.DiffRaw(inf.Signal, signalPrio(p.Target, p.Calls[i], &inf))
 		if diff.Empty() {
-			continue
+			// hjx-modify: or maybe add code here
+			ok, closepcdist := fuzzer.checkIsCloserToRacePair(&inf, p, fuzzer.thresholdPCDist)
+			Logf(1, "[HJX-MODIFY fuzzer]: closepcdist is %v", closepcdist)
+			if !ok {
+				continue
+			}
+			// continue
 		}
 		calls = append(calls, i)
 		fuzzer.signalMu.RUnlock()
@@ -468,6 +546,7 @@ func (fuzzer *Fuzzer) checkNewSignal(p *prog.Prog, info []ipc.CallInfo) (calls [
 		fuzzer.signalMu.Unlock()
 		fuzzer.signalMu.RLock()
 	}
+	fuzzer.updatethresholdPCDistStatus()
 	return
 }
 
