@@ -16,3 +16,4 @@ playground
 *.wpa
 /toolchains/llvm-5.0.1
 /tools/race-syzkaller/src/github.com/google/syzkaller/syzkaller
+*workdir*
