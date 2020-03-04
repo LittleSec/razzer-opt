@@ -276,6 +276,8 @@ type ReproResult struct {
 }
 
 func (mgr *Manager) vmLoop() {
+	// hjx-modify
+	Logf(0, "---@#@#@--- THIS IS origin razzer strategy ---@#@#---")
 	Logf(0, "booting test machines...")
 	Logf(0, "wait for the connection from test machine...")
 	instancesPerRepro := 4
